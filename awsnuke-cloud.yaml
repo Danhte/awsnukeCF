@@ -1,0 +1,149 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Automate EC2 instance and IAM roles for aws-nuke
+
+Resources:
+  MyVPCNuke:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: '10.0.0.0/16'
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{ Key: Name, Value: 'MyVPCNuke' }]
+
+  MySubnetNuke:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref MyVPCNuke
+      CidrBlock: '10.0.1.0/24'
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags: [{ Key: Name, Value: 'MySubnetNuke' }]
+
+  MyInternetGatewayNuke:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties: 
+      Tags: [{ Key: Name, Value: 'MyInternetGatewayNuke' }]
+
+  MyVPCGatewayAttachmentNuke:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref MyVPCNuke
+      InternetGatewayId: !Ref MyInternetGatewayNuke
+
+  MyRouteTableNuke:
+    Type: 'AWS::EC2::RouteTable'
+    Properties:
+      VpcId: !Ref MyVPCNuke
+      Tags: [{ Key: Name, Value: 'MyRouteTableNuke' }]
+
+  MyRouteNuke:
+    Type: 'AWS::EC2::Route'
+    Properties:
+      RouteTableId: !Ref MyRouteTableNuke
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref MyInternetGatewayNuke
+
+  MySubnetRouteTableAssociationNuke:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref MySubnetNuke
+      RouteTableId: !Ref MyRouteTableNuke
+
+  MySecurityGroupNuke:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: 'Allow SSH access'
+      VpcId: !Ref MyVPCNuke
+      SecurityGroupIngress: 
+        - IpProtocol: 'tcp'
+          FromPort: 22
+          ToPort: 22
+          CidrIp: '0.0.0.0/0'
+
+  MyEC2InstanceNuke:
+    Type: 'AWS::EC2::Instance'
+    Properties:
+      InstanceType: 't2.micro'
+      ImageId: 'ami-0ae8f15ae66fe8cda'
+      KeyName: 'my-key-pair'
+      IamInstanceProfile: !Ref MyIAMInstanceProfileNuke
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          SubnetId: !Ref MySubnetNuke
+          GroupSet: 
+            - !Ref MySecurityGroupNuke
+      Tags: [{ Key: Name, Value: 'MyNukeInstance' }]
+      UserData: 
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          yum install -y wget tar expect
+          FILENAME="aws-nuke-v2.25.0-linux-amd64.tar.gz"
+          wget -c "https://github.com/rebuy-de/aws-nuke/releases/download/v2.25.0/aws-nuke-v2.25.0-linux-amd64.tar.gz"
+          tar -xvf "$FILENAME"
+          mv "aws-nuke-v2.25.0-linux-amd64" aws-nuke
+          sudo mv aws-nuke /usr/local/bin/aws-nuke
+          ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
+          ACCOUNT_ALIAS=$(aws iam list-account-aliases --query 'AccountAliases[0]' --output text || echo "$ACCOUNT_ID")
+          cat <<EOF > "/home/ec2-user/nuke-config.yml"
+          regions:
+            - eu-west-1
+            - us-east-1
+            - global
+
+          account-blocklist:
+            - "000000000000" 
+
+          resource-types:
+            targets:
+              - EC2Instance
+              - S3Bucket
+              - EBSVolume
+              - EFSFileSystem
+
+          accounts:
+            $ACCOUNT_ID: {}
+          EOF
+          chmod 666 "/home/ec2-user/nuke-config.yml"
+          /usr/bin/expect <<EOD
+          set timeout -1
+          spawn aws-nuke -c /home/ec2-user/nuke-config.yml --no-dry-run
+          expect {
+              "Do you really want to nuke the account with the ID" {
+                  send "$ACCOUNT_ALIAS\r"
+                  exp_continue
+              }
+              "Do you want to continue? Enter account alias to continue." {
+                  send "$ACCOUNT_ALIAS\r"
+                  exp_continue
+              }
+          }
+          expect eof
+          EOD
+          echo "Proceso de aws-nuke completado autom?ticamente para la cuenta con alias: $ACCOUNT_ALIAS."
+
+  MyIAMRoleNuke:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: 'MyNukeRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: 
+              Service: 'ec2.amazonaws.com'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: 'MyNukePolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: '*'
+                Resource: '*'
+
+  MyIAMInstanceProfileNuke:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Roles: 
+        - !Ref MyIAMRoleNuke
