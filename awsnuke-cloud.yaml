@@ -99,7 +99,6 @@ Resources:
               - EC2Instance
               - S3Bucket
               - EBSVolume
-              - EFSFileSystem
 
           accounts:
             $ACCOUNT_ID: {}
